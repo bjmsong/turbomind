@@ -12,6 +12,7 @@ if(NOT pybind11_FOUND)
     find_package(pybind11 CONFIG)
 endif()
 
+add_library(_turbomind_ext_static STATIC linear.cc)
 pybind11_add_module(${PROJECT_NAME} bind.cpp linear.cc)
 target_link_libraries(${PROJECT_NAME} PRIVATE gemm2)
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_17)

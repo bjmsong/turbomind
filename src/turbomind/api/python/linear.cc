@@ -4,12 +4,16 @@
 #include "src/turbomind/kernels/gemm/cast.h"
 #include "src/turbomind/kernels/gemm/gemm.h"
 #include "src/turbomind/kernels/gemm/types.h"
+#include "src/turbomind/kernels/gemm/tuner/params.h"
 #include "src/turbomind/utils/cuda_utils.h"
 #include "src/turbomind/utils/macro.h"
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #include <fstream>
 #include <iostream>
+#include <sstream>
+#include <random>
+#include <chrono>
 
 namespace turbomind {
 
@@ -98,8 +102,10 @@ struct Linear::Impl {
                                   (int)output_dims_};
         int                device_id;
         check_cuda_error(cudaGetDevice(&device_id));
-        auto gemm = GemmPool::getInstance().get(device_id);
-        auto ec   = gemm->Run(operation,
+        gemm_ = GemmPool::getInstance().get(device_id);
+        tune(in, out, stream, a_desc, c_desc);
+
+        auto ec   = gemm_->Run(operation,
                             1.f,
                             in.data,
                             a_desc,
@@ -273,6 +279,106 @@ struct Linear::Impl {
         }
     }
 
+    template<class First, class Last>
+    std::string Join(First first, Last last, const std::string& delim)
+    {
+        if (first == last) {
+            return {};
+        }
+        std::ostringstream oss;
+        oss << *first++;
+        while (first != last) {
+            oss << delim << *first++;
+        }
+        return oss.str();
+    }
+
+    void tune(const Tensor& in, Tensor& out, cudaStream_t stream, 
+        const gemm::MatrixLayout& a_desc, const gemm::MatrixLayout& c_desc)
+    {       
+        using namespace gemm;
+        if (auto str = std::getenv("TM_GEMM_IMPORT")) {
+            std::ifstream ifs(str);
+            auto n_imported = 0;
+            if (ifs) {
+                n_imported = gemm_->Import(ifs);
+            }
+
+            std::cout << "[Gemm2] " << n_imported << " records imported" << std::endl;
+
+            return;
+        }
+
+        // get bs
+        std::vector<int> bss = gemm_->GetTuningSeq();
+        if (bss.empty()) {
+            bss = GenerateTuningSequence(GetDefaultTuningGenerators());
+        }
+
+        // TODO: pass vocab_size_, max_forward_token_num_
+        int vocab_size_ = 32000;
+        int max_forward_token_num_ = 1024;
+
+        // remove bs that is too large
+        bss.erase(std::remove_if(bss.begin(), bss.end(), [&](auto x) { return x > max_forward_token_num_; }), bss.end());
+
+        auto str = Join(bss.begin(), bss.end(), ", ");
+        std::cout << "[Gemm2] Tuning sequence: " << str << std::endl;
+
+        if (!bss.empty()) {
+                const auto                         max_bs = *std::max_element(bss.begin(), bss.end());
+                std::vector<int>                   input_ids(max_bs);
+                std::mt19937                       g{};
+                std::uniform_int_distribution<int> d{0, vocab_size_ - 1};
+                for (auto& x : input_ids) {
+                    x = d(g);
+                }
+                dispatch_policy_ = DispatchPolicy::kMeasure;
+                const Operation operation{
+                    dispatch_policy_, Epilogue::kNone, {QuantType::kNone}, {QuantType::kDefault, group_size_}, 0, nullptr};
+                check_cuda_error(cudaStreamSynchronize(stream));
+
+                auto tick = std::chrono::steady_clock::now();
+
+                /// NOTE: No explicit barrier can be used here as internal threads are waiting on it now
+                for (auto bs : bss) {
+                    
+                    std::cout << "[Gemm2] " << bs << std::endl;
+                    auto ec   = gemm_->Run(operation,
+                            1.f,
+                            in.data,
+                            a_desc,
+                            nullptr,
+                            {},
+                            weight_->data,
+                            k_desc_,
+                            scales_zeros_,
+                            q_desc_,
+                            0.0f,
+                            out.data,
+                            c_desc,
+                            const_cast<void*>(out.data),
+                            c_desc,
+                            workspace_,
+                            stream);
+                }
+
+                auto tock = std::chrono::steady_clock::now();
+
+                std::cout << "[Gemm2] Tuning finished in " 
+                          << std::chrono::duration<float, std::ratio<1, 1>>(tock - tick).count()
+                          << " seconds." << std::endl;
+                dispatch_policy_ = gemm::DispatchPolicy::kReuse;
+            }
+
+        if (auto path = std::getenv("TM_GEMM_EXPORT")) {
+            std::ofstream ofs(path);
+            const auto    n_records = gemm_->Export(ofs);
+            std::cout << "[Gemm2] " << n_records << " records exported." << std::endl;
+        }
+
+    }
+
 private:
     gemm::DispatchPolicy dispatch_policy_{gemm::DispatchPolicy::kDefault};
     gemm::Workspace      workspace_;
@@ -287,6 +393,8 @@ private:
 
     gemm::MatrixLayout k_desc_;
     gemm::MatrixLayout q_desc_;
+
+    gemm::Gemm*           gemm_;
 };
 
 Linear::Linear(size_t input_dims, size_t output_dims, int w_bit, int group_size)
