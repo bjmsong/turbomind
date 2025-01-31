@@ -13,4 +13,4 @@ cmake ${builder} .. \
     -DCMAKE_INSTALL_PREFIX=${WORKSPACE_PATH}/install \
     -DCMAKE_CUDA_FLAGS="-lineinfo" \
     -DUSE_NVTX=ON \
-    -DBUILD_TEST=OFF
+    -DBUILD_TEST=ON

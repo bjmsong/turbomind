@@ -12,8 +12,10 @@ void test_linear_fp32() {
     int w_bit = 4;
     int group_size = 128;
 
+    // step1: initialization
     Linear linear(input_dims, output_dims, w_bit, group_size);
 
+    // step2: Prepare input
     turbomind::Tensor input;
 
     std::vector<size_t> shape = {2, 3};
@@ -51,10 +53,10 @@ void test_linear_fp32() {
     cudaMalloc(&scales.data, scale_count * sizeof(__half));
     cudaMalloc(&qzeros.data, scale_count * sizeof(__half));
 
-    // 初始化后处理
+    // step3: 初始化后处理
     linear.post_init(qweight, scales, qzeros, false);
 
-    // 执行forward
+    // step4: forward
     cudaStream_t stream;
     cudaStreamCreate(&stream);
     linear.forward(input, output, stream);
