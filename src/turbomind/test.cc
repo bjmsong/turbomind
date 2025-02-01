@@ -6,7 +6,7 @@
 
 using namespace turbomind;
 
-void test_linear_fp32() {
+void test_linear() {
     size_t input_dims = 256;
     size_t output_dims = 512;
     int w_bit = 4;
@@ -71,7 +71,7 @@ void test_linear_fp32() {
 
 int main() {
     try {
-        test_linear_fp32();
+        test_linear();
         std::cout << "Linear test passed!" << std::endl;
     } catch (const std::exception& e) {
         std::cerr << "Test failed: " << e.what() << std::endl;
